@@ -24,19 +24,16 @@ class Question {
 // ========== Сервисы ==========
 class StorageService {
   static saveState(state) {
-    // TODO: сериализовать state и сохранить в localStorage
-    // Пример: localStorage.setItem(STORAGE_KEYS.STATE, JSON.stringify(state));
-    throw new Error("Not implemented: StorageService.saveState");
+    localStorage.setItem(STORAGE_KEYS.STATE, JSON.stringify(state));
   }
 
   static loadState() {
-    // TODO: прочитать и распарсить состояние, вернуть объект или null
-    throw new Error("Not implemented: StorageService.loadState");
+    const state = JSON.parse(localStorage.getItem(STORAGE_KEYS.STATE));
+    return state;
   }
 
   static clear() {
-    // TODO: очистить сохранённое состояние
-    throw new Error("Not implemented: StorageService.clear");
+    localStorage.removeItem(STORAGE_KEYS.STATE);
   }
 }
 
@@ -47,13 +44,13 @@ class QuizEngine {
     this.title = quiz.title;
     this.timeLimitSec = quiz.timeLimitSec;
     this.passThreshold = quiz.passThreshold;
-    this.questions = quiz.questions.map((q) => new Question(q));
+    this.questions = this.shuffleQuestions(quiz.questions);
 
-    this.currentIndex = 0;
+    this.currentIndex = quiz.currentIndex ?? 0;
     /** @type {Record<string, number|undefined>} */
-    this.answers = {}; // questionId -> selectedIndex
-    this.remainingSec = quiz.timeLimitSec;
-    this.isFinished = false;
+    this.answers = quiz.answers ?? {}; // questionId -> selectedIndex
+    this.remainingSec = quiz.remainingSec ?? quiz.timeLimitSec;
+    this.isFinished = quiz.isFinished ?? false;
   }
 
   get length() {
@@ -62,55 +59,92 @@ class QuizEngine {
   get currentQuestion() {
     return this.questions[this.currentIndex];
   }
+  get answeredQuestionCount() {
+    return Object.keys(this.answers).length;
+  }
 
   /** @param {number} index */
   goTo(index) {
-    // TODO: валидировать границы и сменить текущий индекс
-    throw new Error("Not implemented: QuizEngine.goTo");
+    if (index < 0 || index >= this.questions.length) return;
+    this.currentIndex = index;
   }
 
   next() {
-    // TODO: перейти к следующему вопросу, если возможно
-    throw new Error("Not implemented: QuizEngine.next");
+    if (this.currentIndex === this.questions.length - 1) return;
+    this.currentIndex++;
   }
 
   prev() {
-    // TODO: перейти к предыдущему вопросу, если возможно
-    throw new Error("Not implemented: QuizEngine.prev");
+    if (this.currentIndex === 0) return;
+    this.currentIndex--;
   }
 
   /** @param {number} optionIndex */
   select(optionIndex) {
-    // TODO: сохранить выбор пользователя для текущего вопроса
-    throw new Error("Not implemented: QuizEngine.select");
+    if (optionIndex < 0 || optionIndex >= this.currentQuestion.options.length)
+      return;
+    this.answers[this.currentQuestion.id] = optionIndex;
   }
 
   getSelectedIndex() {
-    // TODO: вернуть выбранный индекс для текущего вопроса (или undefined)
-    throw new Error("Not implemented: QuizEngine.getSelectedIndex");
+    return this.answers[this.currentQuestion.id];
   }
 
   tick() {
-    // TODO: декремент таймера; если 0 — завершить тест
-    throw new Error("Not implemented: QuizEngine.tick");
+    if (this.isFinished || this.remainingSec <= 0) return false;
+
+    this.remainingSec--;
+    return this.remainingSec > 0;
   }
 
   finish() {
-    // TODO: зафиксировать завершение и вернуть сводку результата
-    // return { correct: number, total: number, percent: number, passed: boolean }
-    throw new Error("Not implemented: QuizEngine.finish");
+    this.isFinished = true;
+
+    const correct = this.questions.reduce(
+      (acc, q) => acc + Number(this.answers[q.id] === q.correctIndex),
+      0,
+    );
+    const total = this.questions.length;
+    const percent = correct / total;
+    const passed = percent >= this.passThreshold;
+    return { correct, total, percent, passed };
+  }
+
+  /** @returns {Question[]} */
+  shuffleQuestions(questions) {
+    const shuffled = questions.map((q) => new Question(q));
+    for (let i = shuffled.length - 1; i >= 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      shuffled[i].options = this.shuffleOptions(shuffled[i].options);
+    }
+    console.log(shuffled);
+    return shuffled;
+  }
+
+  /** @returns {{text: string, idx: number}[]} */
+  shuffleOptions(options) {
+    const shuffled = options.map((opt, i) => ({ text: opt, idx: i }));
+    for (let i = shuffled.length - 1; i >= 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
   }
 
   /** Восстановление/выгрузка состояния для localStorage */
   toState() {
-    // TODO: вернуть сериализуемый снимок состояния
-    throw new Error("Not implemented: QuizEngine.toState");
+    return {
+      currentIndex: this.currentIndex,
+      answers: this.answers,
+      remainingSec: this.remainingSec,
+      isFinished: this.isFinished,
+    };
   }
 
   /** @param {any} state */
   static fromState(quiz, state) {
-    // TODO: создать двигатель на базе сохранённого состояния
-    throw new Error("Not implemented: QuizEngine.fromState");
+    return new QuizEngine({ ...quiz, ...state });
   }
 }
 
@@ -151,7 +185,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   renderAll();
 
-  startTimer();
+  if (engine.isFinished) {
+    renderResult(engine.finish());
+  } else {
+    startTimer();
+  }
 });
 
 async function loadQuiz() {
@@ -171,9 +209,13 @@ function startTimer() {
   stopTimer();
   timerId = window.setInterval(() => {
     try {
-      engine.tick();
+      const isActive = engine.tick();
       persist();
       renderTimer();
+
+      if (!isActive) {
+        finishQuiz();
+      }
     } catch (e) {
       // До реализации tick() попадём сюда — это нормально для шаблона.
       stopTimer();
@@ -184,6 +226,15 @@ function stopTimer() {
   if (timerId) {
     clearInterval(timerId);
     timerId = undefined;
+  }
+}
+function finishQuiz() {
+  const summary = safeCall(() => engine.finish());
+  if (summary) {
+    stopTimer();
+    renderAll();
+    renderResult(summary);
+    persist();
   }
 }
 
@@ -202,12 +253,7 @@ function bindEvents() {
   });
 
   els.btnFinish.addEventListener("click", () => {
-    const summary = safeCall(() => engine.finish());
-    if (summary) {
-      stopTimer();
-      renderResult(summary);
-      persist();
-    }
+    finishQuiz();
   });
 
   els.btnReview.addEventListener("click", () => {
@@ -269,26 +315,28 @@ function renderQuestion() {
   els.qText.textContent = q.text;
 
   els.form.innerHTML = "";
+
   q.options.forEach((opt, i) => {
     const id = `opt-${q.id}-${i}`;
     const wrapper = document.createElement("label");
     wrapper.className = "option";
     if (reviewMode) {
       const chosen = engine.answers[q.id];
-      if (i === q.correctIndex) wrapper.classList.add("correct");
-      if (chosen === i && i !== q.correctIndex)
+      if (opt.idx === q.correctIndex) wrapper.classList.add("correct");
+      if (chosen === opt.idx && opt.idx !== q.correctIndex)
         wrapper.classList.add("incorrect");
     }
 
     const input = document.createElement("input");
     input.type = "radio";
     input.name = "option";
-    input.value = String(i);
+    input.value = String(opt.idx);
     input.id = id;
-    input.checked = engine.getSelectedIndex?.() === i;
+    input.checked = engine.getSelectedIndex?.() === opt.idx;
+    input.disabled = engine.isFinished;
 
     const span = document.createElement("span");
-    span.textContent = opt;
+    span.textContent = opt.text;
 
     wrapper.appendChild(input);
     wrapper.appendChild(span);
@@ -302,9 +350,8 @@ function renderNav() {
   els.btnNext.disabled = !(
     engine.currentIndex < engine.length - 1 && hasSelection
   );
-  els.btnFinish.disabled = !(
-    engine.currentIndex === engine.length - 1 && hasSelection
-  );
+  els.btnFinish.disabled =
+    !(engine.answeredQuestionCount === engine.length) || engine.isFinished;
 }
 
 function renderResult(summary) {
